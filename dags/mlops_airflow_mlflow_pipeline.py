@@ -1,17 +1,4 @@
-"""
-MLOps Airflow + MLflow Pipeline — Titanic Survival Prediction
-==============================================================
-DAG that orchestrates the full ML lifecycle:
-  data ingestion → validation → parallel preprocessing →
-  encoding → model training (MLflow) → evaluation →
-  branching (register / reject model).
-
-Trigger with different hyperparameters via dag_run.conf, e.g.:
-  {"model_type": "random_forest", "n_estimators": 100, "max_depth": 5}
-"""
-
 from __future__ import annotations
-
 import json
 import logging
 import os
@@ -23,9 +10,6 @@ import pandas as pd
 from airflow import DAG
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 DATASET_PATH = os.environ.get(
     "TITANIC_DATASET_PATH",
     "/Users/ahmad/Library/CloudStorage/OneDrive-Personal/University/Semester-8/MLOPs/Assignment-2/Titanic-Dataset.csv",
@@ -35,10 +19,7 @@ MLFLOW_EXPERIMENT_NAME = "Titanic_Survival_Prediction"
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Default DAG arguments
-# ---------------------------------------------------------------------------
-default_args = {
+airflow_args = {
     "owner": "airflow",
     "depends_on_past": False,
     "email_on_failure": False,
@@ -47,13 +28,9 @@ default_args = {
     "retry_delay": timedelta(seconds=30),
 }
 
-# =========================================================================
-#  TASK FUNCTIONS
-# =========================================================================
 
 # ---- Task 2: Data Ingestion -------------------------------------------
 def data_ingestion(**context):
-    """Load Titanic CSV, print shape, log missing values, push path via XCom."""
     df = pd.read_csv(DATASET_PATH)
 
     # Print dataset shape
@@ -72,11 +49,7 @@ def data_ingestion(**context):
 
 # ---- Task 3: Data Validation ------------------------------------------
 def data_validation(**context):
-    """
-    Check missing % in Age and Embarked.
-    Raise exception if missing > 30%.
-    This task has retries=2 to demonstrate retry behaviour.
-    """
+
     dataset_path = context["ti"].xcom_pull(
         task_ids="data_ingestion", key="dataset_path"
     )
@@ -91,8 +64,6 @@ def data_validation(**context):
     print(f"Age missing: {age_missing_pct:.2f}%")
     print(f"Embarked missing: {embarked_missing_pct:.2f}%")
 
-    # --- Intentional failure demo (set Airflow Variable
-    #     'force_validation_failure' to 'true' to trigger) ---
     from airflow.models import Variable
 
     force_fail = Variable.get("force_validation_failure", default_var="false")
@@ -139,7 +110,6 @@ def handle_missing_values(**context):
 
 # ---- Task 4b: Feature Engineering -------------------------------------
 def feature_engineering(**context):
-    """Create FamilySize and IsAlone features."""
     dataset_path = context["ti"].xcom_pull(
         task_ids="data_ingestion", key="dataset_path"
     )
@@ -157,9 +127,6 @@ def feature_engineering(**context):
 
 # ---- Task 5: Data Encoding --------------------------------------------
 def data_encoding(**context):
-    """
-    Merge the outputs of parallel tasks, encode categoricals, drop irrelevant cols.
-    """
     missing_path = context["ti"].xcom_pull(
         task_ids="handle_missing_values", key="missing_handled_path"
     )
@@ -195,7 +162,6 @@ def data_encoding(**context):
 
 # ---- Task 6: Model Training with MLflow --------------------------------
 def model_training(**context):
-    """Train model, log hyperparams and artifacts to MLflow."""
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import train_test_split
@@ -253,7 +219,6 @@ def model_training(**context):
 
         log.info("Model training complete. Run ID: %s", run_id)
 
-    # Save test data for evaluation
     test_path = os.path.join(tempfile.gettempdir(), "titanic_test.csv")
     test_df = X_test.copy()
     test_df["Survived"] = y_test
@@ -267,7 +232,6 @@ def model_training(**context):
 
 # ---- Task 7: Model Evaluation -----------------------------------------
 def model_evaluation(**context):
-    """Compute metrics, log to MLflow, push accuracy via XCom."""
     from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
     run_id = context["ti"].xcom_pull(task_ids="model_training", key="run_id")
@@ -315,7 +279,6 @@ def model_evaluation(**context):
 
 # ---- Task 8: Branching Logic ------------------------------------------
 def check_accuracy(**context):
-    """BranchPythonOperator callable: route based on accuracy threshold."""
     accuracy = context["ti"].xcom_pull(task_ids="model_evaluation", key="accuracy")
     log.info("Accuracy = %.4f — threshold is 0.80", accuracy)
 
@@ -327,7 +290,6 @@ def check_accuracy(**context):
 
 # ---- Task 9a: Register Model ------------------------------------------
 def register_model(**context):
-    """Register the model in MLflow Model Registry."""
     run_id = context["ti"].xcom_pull(task_ids="model_evaluation", key="run_id")
     model_type = context["ti"].xcom_pull(task_ids="model_evaluation", key="model_type")
     accuracy = context["ti"].xcom_pull(task_ids="model_evaluation", key="accuracy")
@@ -345,14 +307,13 @@ def register_model(**context):
         model_type,
     )
     print(
-        f"✅ Model REGISTERED — {model_name} v{result.version} "
+        f" Model REGISTERED — {model_name} v{result.version} "
         f"(accuracy={accuracy:.4f}, type={model_type})"
     )
 
 
 # ---- Task 9b: Reject Model --------------------------------------------
 def reject_model(**context):
-    """Log rejection reason (accuracy too low) to MLflow."""
     run_id = context["ti"].xcom_pull(task_ids="model_evaluation", key="run_id")
     accuracy = context["ti"].xcom_pull(task_ids="model_evaluation", key="accuracy")
     model_type = context["ti"].xcom_pull(task_ids="model_evaluation", key="model_type")
@@ -370,7 +331,7 @@ def reject_model(**context):
         "Model REJECTED: accuracy=%.4f, type=%s", accuracy, model_type
     )
     print(
-        f"❌ Model REJECTED — accuracy={accuracy:.4f} < 0.80 (type={model_type})"
+        f"Model REJECTED — accuracy={accuracy:.4f} < 0.80 (type={model_type})"
     )
 
 
@@ -379,7 +340,7 @@ def reject_model(**context):
 # =========================================================================
 with DAG(
     dag_id="mlops_pipeline",
-    default_args=default_args,
+    default_args=airflow_args,
     description="End-to-end ML pipeline: Titanic survival prediction with MLflow",
     schedule=None,
     start_date=datetime(2024, 1, 1),
@@ -447,12 +408,7 @@ with DAG(
         python_callable=reject_model,
     )
 
-    # ---- Dependencies (no cyclic dependencies) ----
-    #
-    #  data_ingestion >> data_validation >> [handle_missing, feature_engineering]
-    #  >> data_encoding >> model_training >> model_evaluation >> check_accuracy
-    #  >> [register_model | reject_model]
-    #
+
     t_ingest >> t_validate
     t_validate >> [t_missing, t_features]          # Parallel (Task 4)
     [t_missing, t_features] >> t_encoding          # Join
